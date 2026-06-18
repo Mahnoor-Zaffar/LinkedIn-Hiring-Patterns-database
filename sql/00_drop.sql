@@ -12,4 +12,8 @@ DROP TABLE IF EXISTS companies CASCADE;
 DROP TABLE IF EXISTS pipeline_stages CASCADE;
 DROP TABLE IF EXISTS schema_migrations CASCADE;
 
+DROP FUNCTION IF EXISTS fn_refresh_days_in_pipeline() CASCADE;
+DROP FUNCTION IF EXISTS fn_validate_job_posting_company() CASCADE;
+DROP FUNCTION IF EXISTS fn_applications_set_timestamps() CASCADE;
+DROP FUNCTION IF EXISTS fn_calc_days_in_pipeline(TIMESTAMPTZ) CASCADE;
 DROP FUNCTION IF EXISTS fn_set_updated_at() CASCADE;

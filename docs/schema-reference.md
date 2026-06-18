@@ -8,8 +8,8 @@ Corporate hiring accounts.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | `SERIAL` | PK | Surrogate key |
-| `name` | `VARCHAR(255)` | NOT NULL | Legal or brand name |
+| `id` | `INT GENERATED ALWAYS AS IDENTITY` | PK | Surrogate key |
+| `name` | `VARCHAR(255)` | NOT NULL, UNIQUE | Legal or brand name |
 | `industry` | `VARCHAR(100)` | NOT NULL | Industry vertical |
 | `employee_count` | `INT` | NOT NULL, > 0 | Headcount for segmentation |
 | `headquarters` | `VARCHAR(150)` | | Primary office location |
@@ -60,7 +60,7 @@ Open roles with numeric salary bands.
 |--------|------|-------------|-------------|
 | `id` | `SERIAL` | PK | Surrogate key |
 | `recruiter_id` | `INT` | NOT NULL, FK → `recruiters(id)` CASCADE | Posting owner |
-| `company_id` | `INT` | NOT NULL, FK → `companies(id)` CASCADE | Hiring company |
+| `company_id` | `INT` | NOT NULL, FK → `companies(id)` CASCADE | Hiring company (must match recruiter's company; enforced by trigger) |
 | `title` | `VARCHAR(255)` | NOT NULL | Role title |
 | `department` | `VARCHAR(100)` | NOT NULL | Internal department |
 | `employment_type` | `VARCHAR(50)` | NOT NULL, CHECK enum | `full_time`, `part_time`, `contract`, `internship` |
@@ -106,7 +106,11 @@ Junction table for candidate-to-job application events.
 
 **Indexes:** `idx_applications_job_id`, `idx_applications_candidate_id`, `idx_applications_pipeline_stage`, `idx_applications_applied_at`
 
-**Trigger:** `trg_applications_set_updated_at` — auto-updates `updated_at` on row change
+**Trigger:** `trg_applications_set_timestamps` — maintains `days_in_pipeline` and `updated_at`
+
+**Trigger:** `trg_job_postings_validate_company` — enforces `job_postings.company_id = recruiters.company_id`
+
+**Index:** `idx_job_postings_open_roles` — partial index on open roles (`closed_at IS NULL`)
 
 ---
 

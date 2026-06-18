@@ -1,5 +1,5 @@
 CREATE TABLE job_postings (
-    id              SERIAL PRIMARY KEY,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     recruiter_id    INT NOT NULL REFERENCES recruiters(id) ON DELETE CASCADE,
     company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     title           VARCHAR(255) NOT NULL,
@@ -16,5 +16,6 @@ CREATE TABLE job_postings (
 );
 
 COMMENT ON TABLE job_postings IS 'Open roles published by recruiters on behalf of companies.';
+COMMENT ON COLUMN job_postings.company_id IS 'Denormalized for query performance; must match recruiter.company_id (enforced by trigger).';
 COMMENT ON COLUMN job_postings.min_salary IS 'Lower bound of compensation band (INT for index-friendly range queries).';
 COMMENT ON COLUMN job_postings.max_salary IS 'Upper bound of compensation band (INT for index-friendly range queries).';

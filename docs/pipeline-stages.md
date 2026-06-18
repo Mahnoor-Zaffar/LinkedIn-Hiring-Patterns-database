@@ -20,7 +20,8 @@ Applications track hiring progress via a numeric `pipeline_stage` column referen
 - **Numeric codes** enable `BETWEEN` range queries (e.g., all candidates past phone screen)
 - **Reference table** allows stage metadata changes without altering application rows
 - **`is_terminal` flag** supports funnel analytics (active vs. closed applications)
-- **`days_in_pipeline`** (V002) adds time-based conversion metrics alongside stage depth
+- **Table column** (`applications.days_in_pipeline`): maintained by `trg_applications_set_timestamps` on insert/update; batch-refreshed via `fn_refresh_days_in_pipeline()`
+- **View column** (`v_application_pipeline.days_in_pipeline`): reads from the table column (single source of truth)
 
 ## Example Queries
 

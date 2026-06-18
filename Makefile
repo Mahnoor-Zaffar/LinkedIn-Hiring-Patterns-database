@@ -1,13 +1,11 @@
-.PHONY: help up down logs reset setup validate test analytics shell clean
+.PHONY: help up down logs reset setup migrate validate test analytics shell clean bootstrap-all test-migration-path
 
 help: ## Show available commands
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 up: ## Start PostgreSQL via Docker Compose
 	docker compose up -d postgres
-	@echo "Waiting for database..."
-	@docker compose exec postgres sh -c 'until pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB; do sleep 1; done'
-	@echo "Database ready at localhost:$${POSTGRES_PORT:-5432}"
+	@bash scripts/wait-for-db.sh
 
 down: ## Stop Docker Compose services
 	docker compose down
@@ -15,22 +13,28 @@ down: ## Stop Docker Compose services
 logs: ## Tail PostgreSQL logs
 	docker compose logs -f postgres
 
-setup: ## Bootstrap schema, seeds, and migrations
+setup: ## Destructive bootstrap: drop, schema, seeds, migrations, views
 	bash scripts/setup.sh
 
-reset: ## Drop and re-bootstrap the database
-	bash scripts/reset.sh
+reset: setup ## Alias for setup (full drop + re-bootstrap)
 
-validate: ## Run SQL validation test suite
+migrate: ## Apply pending migrations only (non-destructive)
+	bash scripts/migrate.sh
+
+validate: ## Run SQL validation test suite (transactional, non-mutating)
 	bash scripts/validate.sh
 
 test: validate ## Alias for validate
+
+test-migration-path: ## Validate V001 -> V002 incremental upgrade path
+	bash scripts/test-migration-path.sh
 
 analytics: ## Run default hiring funnel analytics query
 	bash scripts/run-analytics.sh sql/analytics/hiring_funnel.sql
 
 shell: ## Open psql shell against the database
-	@PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql \
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
+	PGPASSWORD=$${POSTGRES_PASSWORD:-postgres} psql \
 		-h $${POSTGRES_HOST:-localhost} \
 		-p $${POSTGRES_PORT:-5432} \
 		-U $${POSTGRES_USER:-postgres} \

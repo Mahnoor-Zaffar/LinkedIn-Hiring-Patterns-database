@@ -1,6 +1,6 @@
 CREATE TABLE companies (
-    id              SERIAL PRIMARY KEY,
-    name            VARCHAR(255) NOT NULL,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL UNIQUE,
     industry        VARCHAR(100) NOT NULL,
     employee_count  INT NOT NULL CHECK (employee_count > 0),
     headquarters    VARCHAR(150),

@@ -57,9 +57,10 @@ SELECT * FROM v_company_hiring_metrics;
 ├── docker-compose.yml           # Local PostgreSQL (+ optional pgAdmin)
 ├── Makefile                     # Developer commands
 ├── scripts/
-│   ├── setup.sh                 # Modular bootstrap runner
-│   ├── reset.sh                 # Drop + re-bootstrap
-│   ├── validate.sh              # Run test suite
+│   ├── setup.sh                 # Destructive full bootstrap (drops all objects)
+│   ├── migrate.sh               # Apply pending migrations only
+│   ├── test-migration-path.sh   # Validate V001 -> V002 upgrade path
+│   ├── validate.sh              # Transactional SQL test suite
 │   └── run-analytics.sh         # Execute analytics queries
 ├── sql/
 │   ├── 00_drop.sql
@@ -76,9 +77,11 @@ SELECT * FROM v_company_hiring_metrics;
 | Command | Description |
 |---------|-------------|
 | `make up` | Start PostgreSQL container |
-| `make setup` | Load schema, seeds, and migrations |
-| `make reset` | Full drop + re-bootstrap |
-| `make validate` | Run SQL test suite |
+| `make setup` | Destructive bootstrap (drop + schema + seeds + migrations) |
+| `make reset` | Alias for `make setup` |
+| `make migrate` | Apply pending migrations only (non-destructive) |
+| `make validate` | Run SQL test suite (transactional, non-mutating) |
+| `make test-migration-path` | Validate incremental V001 → V002 upgrade |
 | `make analytics` | Run hiring funnel query |
 | `make shell` | Open `psql` session |
 | `make bootstrap-all` | `up` + `setup` + `validate` |
@@ -114,10 +117,14 @@ bash scripts/run-analytics.sh sql/analytics/salary_benchmarks.sql
 
 | Approach | When to use |
 |----------|-------------|
+| `scripts/setup.sh` | **Canonical path** — day-to-day development and migration testing |
 | `linkedin_hiring_schema.sql` | Quick one-file execution, demos, CI smoke test |
-| `scripts/setup.sh` | Day-to-day development, production-like migration flow |
 
-Both paths produce the same final schema state.
+Both paths must produce the same final schema state. When changing schema, update `sql/` first, then sync `linkedin_hiring_schema.sql`.
+
+> **Security:** Default credentials in `.env.example` are for local development only. Never use them in staging or production.
+
+> **Note:** `make setup` is destructive — it drops all tables before rebuilding. Use `make migrate` for incremental upgrades on an existing database.
 
 ## Optional: pgAdmin
 

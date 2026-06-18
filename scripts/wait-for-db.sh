@@ -17,14 +17,17 @@ DB_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 
 export PGPASSWORD="$DB_PASSWORD"
 
-QUERY_FILE="${1:-sql/analytics/hiring_funnel.sql}"
+MAX_RETRIES="${DB_WAIT_RETRIES:-30}"
+SLEEP_SECONDS="${DB_WAIT_SLEEP:-1}"
 
-if [[ ! -f "$QUERY_FILE" ]]; then
-    echo "Query file not found: $QUERY_FILE"
-    exit 1
-fi
+echo "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
+for ((i = 1; i <= MAX_RETRIES; i++)); do
+    if pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; then
+        echo "Database is ready."
+        exit 0
+    fi
+    sleep "$SLEEP_SECONDS"
+done
 
-psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-    -c "SELECT fn_refresh_days_in_pipeline();" > /dev/null
-
-psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$QUERY_FILE"
+echo "PostgreSQL not ready after ${MAX_RETRIES} attempts."
+exit 1

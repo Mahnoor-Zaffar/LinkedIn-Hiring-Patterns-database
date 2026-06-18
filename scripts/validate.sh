@@ -30,7 +30,11 @@ FAILURES=0
 run_test() {
     local file="$1"
     echo "==> Testing $(basename "$file")"
-    if ! psql "${PSQL_OPTS[@]}" -f "$file" > /dev/null; then
+    if ! {
+        echo "BEGIN;"
+        cat "$file"
+        echo "ROLLBACK;"
+    } | psql "${PSQL_OPTS[@]}" > /dev/null; then
         echo "FAILED: $(basename "$file")"
         FAILURES=$((FAILURES + 1))
     fi

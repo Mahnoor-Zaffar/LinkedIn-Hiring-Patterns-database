@@ -1,11 +1,9 @@
 -- =============================================================================
 -- LinkedIn Hiring Patterns Database
--- Monolithic bootstrap: DDL, seed data, and schema evolution migration
+-- Monolithic bootstrap (keep in sync with sql/ — modular path is canonical)
 -- =============================================================================
 
--- -----------------------------------------------------------------------------
 -- Part 1: DATABASE INITIALIZATION & CLEANUP
--- -----------------------------------------------------------------------------
 
 DROP VIEW IF EXISTS v_company_hiring_metrics CASCADE;
 DROP VIEW IF EXISTS v_job_posting_summary CASCADE;
@@ -19,16 +17,17 @@ DROP TABLE IF EXISTS companies CASCADE;
 DROP TABLE IF EXISTS pipeline_stages CASCADE;
 DROP TABLE IF EXISTS schema_migrations CASCADE;
 
+DROP FUNCTION IF EXISTS fn_refresh_days_in_pipeline() CASCADE;
+DROP FUNCTION IF EXISTS fn_validate_job_posting_company() CASCADE;
+DROP FUNCTION IF EXISTS fn_applications_set_timestamps() CASCADE;
+DROP FUNCTION IF EXISTS fn_calc_days_in_pipeline(TIMESTAMPTZ) CASCADE;
 DROP FUNCTION IF EXISTS fn_set_updated_at() CASCADE;
 
--- -----------------------------------------------------------------------------
 -- Part 2: DDL SCHEMA CREATION
--- Topological order: root dimensions first, then dependents, then junction.
--- -----------------------------------------------------------------------------
 
 CREATE TABLE companies (
-    id              SERIAL PRIMARY KEY,
-    name            VARCHAR(255) NOT NULL,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL UNIQUE,
     industry        VARCHAR(100) NOT NULL,
     employee_count  INT NOT NULL CHECK (employee_count > 0),
     headquarters    VARCHAR(150),
@@ -40,7 +39,7 @@ CREATE TABLE companies (
 );
 
 CREATE TABLE candidates (
-    id                  SERIAL PRIMARY KEY,
+    id                  INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name                VARCHAR(255) NOT NULL,
     headline            VARCHAR(500),
     years_experience    INT NOT NULL DEFAULT 0 CHECK (years_experience >= 0),
@@ -50,7 +49,7 @@ CREATE TABLE candidates (
 );
 
 CREATE TABLE recruiters (
-    id              SERIAL PRIMARY KEY,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     name            VARCHAR(255) NOT NULL,
     email           VARCHAR(255) NOT NULL UNIQUE,
@@ -60,7 +59,7 @@ CREATE TABLE recruiters (
 );
 
 CREATE TABLE job_postings (
-    id              SERIAL PRIMARY KEY,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     recruiter_id    INT NOT NULL REFERENCES recruiters(id) ON DELETE CASCADE,
     company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     title           VARCHAR(255) NOT NULL,
@@ -94,7 +93,7 @@ INSERT INTO pipeline_stages (stage_code, stage_name, description, is_terminal) V
     (8, 'withdrawn',  'Candidate withdrew from the process.',                      TRUE);
 
 CREATE TABLE applications (
-    id              SERIAL PRIMARY KEY,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id          INT NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
     candidate_id    INT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
     pipeline_stage  SMALLINT NOT NULL DEFAULT 1 REFERENCES pipeline_stages(stage_code),
@@ -108,87 +107,49 @@ CREATE INDEX idx_job_postings_recruiter_id   ON job_postings(recruiter_id);
 CREATE INDEX idx_job_postings_company_id     ON job_postings(company_id);
 CREATE INDEX idx_job_postings_salary_range   ON job_postings(min_salary, max_salary);
 CREATE INDEX idx_job_postings_posted_at      ON job_postings(posted_at DESC);
+CREATE INDEX idx_job_postings_open_roles     ON job_postings(posted_at DESC) WHERE closed_at IS NULL;
 CREATE INDEX idx_applications_job_id         ON applications(job_id);
 CREATE INDEX idx_applications_candidate_id   ON applications(candidate_id);
 CREATE INDEX idx_applications_pipeline_stage ON applications(pipeline_stage);
 CREATE INDEX idx_applications_applied_at     ON applications(applied_at DESC);
 
-CREATE OR REPLACE FUNCTION fn_set_updated_at()
+CREATE OR REPLACE FUNCTION fn_calc_days_in_pipeline(applied_ts TIMESTAMPTZ)
+RETURNS INT
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT GREATEST(0, (CURRENT_DATE - applied_ts::DATE));
+$$;
+
+CREATE OR REPLACE FUNCTION fn_validate_job_posting_company()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    recruiter_company_id INT;
 BEGIN
-    NEW.updated_at = NOW();
+    SELECT company_id INTO recruiter_company_id
+    FROM recruiters
+    WHERE id = NEW.recruiter_id;
+
+    IF recruiter_company_id IS NULL THEN
+        RAISE EXCEPTION 'recruiter_id % does not exist', NEW.recruiter_id;
+    END IF;
+
+    IF NEW.company_id IS DISTINCT FROM recruiter_company_id THEN
+        RAISE EXCEPTION
+            'company_id % must match recruiter company_id % for recruiter_id %',
+            NEW.company_id, recruiter_company_id, NEW.recruiter_id;
+    END IF;
+
     RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER trg_applications_set_updated_at
-    BEFORE UPDATE ON applications
+CREATE TRIGGER trg_job_postings_validate_company
+    BEFORE INSERT OR UPDATE OF recruiter_id, company_id ON job_postings
     FOR EACH ROW
-    EXECUTE PROCEDURE fn_set_updated_at();
-
-CREATE VIEW v_application_pipeline AS
-SELECT
-    a.id AS application_id,
-    c.name AS candidate_name,
-    c.email AS candidate_email,
-    jp.title AS job_title,
-    co.name AS company_name,
-    ps.stage_name AS pipeline_stage,
-    ps.is_terminal,
-    a.applied_at,
-    a.updated_at,
-    (CURRENT_DATE - a.applied_at::DATE) AS days_in_pipeline
-FROM applications a
-JOIN candidates c ON c.id = a.candidate_id
-JOIN job_postings jp ON jp.id = a.job_id
-JOIN companies co ON co.id = jp.company_id
-JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage;
-
-CREATE VIEW v_job_posting_summary AS
-SELECT
-    jp.id AS job_id,
-    jp.title,
-    co.name AS company_name,
-    co.industry,
-    r.name AS recruiter_name,
-    jp.department,
-    jp.min_salary,
-    jp.max_salary,
-    ROUND((jp.min_salary + jp.max_salary) / 2.0, 2) AS midpoint_salary,
-    jp.is_remote,
-    jp.posted_at,
-    COUNT(a.id) AS total_applications,
-    COUNT(a.id) FILTER (WHERE ps.is_terminal = FALSE) AS active_applications,
-    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
-FROM job_postings jp
-JOIN companies co ON co.id = jp.company_id
-JOIN recruiters r ON r.id = jp.recruiter_id
-LEFT JOIN applications a ON a.job_id = jp.id
-LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
-GROUP BY
-    jp.id, jp.title, co.name, co.industry, r.name,
-    jp.department, jp.min_salary, jp.max_salary,
-    jp.is_remote, jp.posted_at;
-
-CREATE VIEW v_company_hiring_metrics AS
-SELECT
-    co.id AS company_id,
-    co.name AS company_name,
-    co.industry,
-    COUNT(DISTINCT r.id) AS recruiter_count,
-    COUNT(DISTINCT jp.id) AS open_roles,
-    COUNT(a.id) AS total_applications,
-    ROUND(AVG(jp.min_salary), 2) AS avg_min_salary,
-    ROUND(AVG(jp.max_salary), 2) AS avg_max_salary,
-    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
-FROM companies co
-LEFT JOIN recruiters r ON r.company_id = co.id
-LEFT JOIN job_postings jp ON jp.company_id = co.id
-LEFT JOIN applications a ON a.job_id = jp.id
-LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
-GROUP BY co.id, co.name, co.industry;
+    EXECUTE PROCEDURE fn_validate_job_posting_company();
 
 CREATE TABLE schema_migrations (
     version     VARCHAR(100) PRIMARY KEY,
@@ -199,10 +160,7 @@ CREATE TABLE schema_migrations (
 INSERT INTO schema_migrations (version, description) VALUES
     ('V001', 'Initial schema: companies, candidates, recruiters, job_postings, applications, pipeline_stages.');
 
--- -----------------------------------------------------------------------------
 -- Part 3: MOCK DATA SEEDING
--- Validates 1:N hierarchies and N:M application workflows.
--- -----------------------------------------------------------------------------
 
 INSERT INTO companies (name, industry, employee_count, headquarters, founded_year) VALUES
     ('Stripe',           'Financial Technology',  8000,  'San Francisco, CA', 2010),
@@ -262,20 +220,133 @@ INSERT INTO applications (job_id, candidate_id, pipeline_stage, applied_at) VALU
     (8, 3, 1, '2025-12-02 09:00:00+00'),
     (8, 5, 3, '2025-12-03 13:20:00+00');
 
--- -----------------------------------------------------------------------------
 -- Part 4: SCHEMA EVOLUTION MIGRATION
--- Product update: add days_in_pipeline tracking metric with table constraint.
--- -----------------------------------------------------------------------------
 
 ALTER TABLE applications
-    ADD COLUMN days_in_pipeline INT NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS days_in_pipeline INT NOT NULL DEFAULT 0;
 
-UPDATE applications
-SET days_in_pipeline = GREATEST(0, (CURRENT_DATE - applied_at::DATE));
+ALTER TABLE applications
+    DROP CONSTRAINT IF EXISTS chk_applications_days_in_pipeline;
 
 ALTER TABLE applications
     ADD CONSTRAINT chk_applications_days_in_pipeline
     CHECK (days_in_pipeline >= 0);
 
 INSERT INTO schema_migrations (version, description) VALUES
-    ('V002', 'Add days_in_pipeline tracking metric with non-negative constraint.');
+    ('V002', 'Add days_in_pipeline tracking metric with non-negative constraint.')
+ON CONFLICT (version) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION fn_applications_set_timestamps()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.days_in_pipeline := fn_calc_days_in_pipeline(NEW.applied_at);
+
+    IF TG_OP = 'UPDATE' THEN
+        NEW.updated_at := NOW();
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_refresh_days_in_pipeline()
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE applications
+    SET days_in_pipeline = fn_calc_days_in_pipeline(applied_at);
+END;
+$$;
+
+CREATE TRIGGER trg_applications_set_timestamps
+    BEFORE INSERT OR UPDATE OF applied_at, pipeline_stage ON applications
+    FOR EACH ROW
+    EXECUTE PROCEDURE fn_applications_set_timestamps();
+
+SELECT fn_refresh_days_in_pipeline();
+
+CREATE VIEW v_application_pipeline AS
+SELECT
+    a.id AS application_id,
+    c.name AS candidate_name,
+    c.email AS candidate_email,
+    jp.title AS job_title,
+    co.name AS company_name,
+    ps.stage_name AS pipeline_stage,
+    ps.is_terminal,
+    a.applied_at,
+    a.updated_at,
+    a.days_in_pipeline
+FROM applications a
+JOIN candidates c ON c.id = a.candidate_id
+JOIN job_postings jp ON jp.id = a.job_id
+JOIN companies co ON co.id = jp.company_id
+JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage;
+
+CREATE VIEW v_job_posting_summary AS
+SELECT
+    jp.id AS job_id,
+    jp.title,
+    co.name AS company_name,
+    co.industry,
+    r.name AS recruiter_name,
+    jp.department,
+    jp.min_salary,
+    jp.max_salary,
+    ROUND((jp.min_salary + jp.max_salary) / 2.0, 2) AS midpoint_salary,
+    jp.is_remote,
+    jp.posted_at,
+    COUNT(a.id) AS total_applications,
+    COUNT(a.id) FILTER (WHERE ps.is_terminal = FALSE) AS active_applications,
+    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+FROM job_postings jp
+JOIN companies co ON co.id = jp.company_id
+JOIN recruiters r ON r.id = jp.recruiter_id
+LEFT JOIN applications a ON a.job_id = jp.id
+LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
+GROUP BY
+    jp.id, jp.title, co.name, co.industry, r.name,
+    jp.department, jp.min_salary, jp.max_salary,
+    jp.is_remote, jp.posted_at;
+
+CREATE VIEW v_company_hiring_metrics AS
+WITH company_application_stats AS (
+    SELECT
+        jp.company_id,
+        COUNT(a.id) AS total_applications,
+        COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+    FROM job_postings jp
+    LEFT JOIN applications a ON a.job_id = jp.id
+    LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
+    GROUP BY jp.company_id
+),
+company_salary_stats AS (
+    SELECT
+        jp.company_id,
+        ROUND(AVG(jp.min_salary), 2) AS avg_min_salary,
+        ROUND(AVG(jp.max_salary), 2) AS avg_max_salary
+    FROM job_postings jp
+    GROUP BY jp.company_id
+)
+SELECT
+    co.id AS company_id,
+    co.name AS company_name,
+    co.industry,
+    COUNT(DISTINCT r.id) AS recruiter_count,
+    COUNT(DISTINCT jp.id) AS open_roles,
+    COALESCE(cas.total_applications, 0) AS total_applications,
+    css.avg_min_salary,
+    css.avg_max_salary,
+    COALESCE(cas.offers_extended, 0) AS offers_extended
+FROM companies co
+LEFT JOIN recruiters r ON r.company_id = co.id
+LEFT JOIN job_postings jp ON jp.company_id = co.id
+LEFT JOIN company_application_stats cas ON cas.company_id = co.id
+LEFT JOIN company_salary_stats css ON css.company_id = co.id
+GROUP BY
+    co.id, co.name, co.industry,
+    cas.total_applications, cas.offers_extended,
+    css.avg_min_salary, css.avg_max_salary;

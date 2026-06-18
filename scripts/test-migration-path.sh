@@ -17,42 +17,22 @@ DB_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 
 export PGPASSWORD="$DB_PASSWORD"
 
-PSQL_OPTS=(
-    -h "$DB_HOST"
-    -p "$DB_PORT"
-    -U "$DB_USER"
-    -d postgres
-    -v ON_ERROR_STOP=1
-)
-
-echo "Ensuring database '${DB_NAME}' exists..."
-if ! psql "${PSQL_OPTS[@]}" -tAc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1; then
-    psql "${PSQL_OPTS[@]}" -c "CREATE DATABASE ${DB_NAME};"
-    echo "Created database '${DB_NAME}'."
-else
-    echo "Database '${DB_NAME}' already exists."
-fi
-
-bash scripts/wait-for-db.sh
-
 PSQL_DB_OPTS=(
     -h "$DB_HOST"
     -p "$DB_PORT"
     -U "$DB_USER"
     -d "$DB_NAME"
     -v ON_ERROR_STOP=1
-    --single-transaction
 )
 
 run_sql() {
     local file="$1"
-    echo "==> Running $(basename "$file")"
-    psql "${PSQL_DB_OPTS[@]}" -f "$file"
+    psql "${PSQL_DB_OPTS[@]}" -f "$file" > /dev/null
 }
 
-echo "Bootstrapping LinkedIn Hiring Patterns Database (destructive: drops all objects)..."
+echo "Testing incremental migration path (V001 base -> V002 upgrade)..."
 
-run_sql "sql/00_drop.sql"
+psql "${PSQL_DB_OPTS[@]}" -f sql/00_drop.sql
 
 for schema_file in sql/schema/0*.sql sql/schema/10_*.sql; do
     [[ -f "$schema_file" ]] || continue
@@ -65,11 +45,14 @@ done
 
 run_sql "sql/seeds/seed_data.sql"
 
-for migration_file in sql/migrations/*.sql; do
-    run_sql "$migration_file"
-done
+if psql "${PSQL_DB_OPTS[@]}" -tAc \
+    "SELECT 1 FROM information_schema.columns WHERE table_name = 'applications' AND column_name = 'days_in_pipeline'" \
+    | grep -q 1; then
+    echo "Migration path test failed: days_in_pipeline exists before V002."
+    exit 1
+fi
 
-run_sql "sql/schema/12_application_triggers.sql"
-run_sql "sql/schema/11_views.sql"
+bash scripts/migrate.sh
+bash scripts/validate.sh
 
-echo "Bootstrap complete."
+echo "Incremental migration path validated."

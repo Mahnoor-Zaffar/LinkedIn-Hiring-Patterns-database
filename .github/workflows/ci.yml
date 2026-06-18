@@ -36,11 +36,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap database
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Bootstrap database (modular path)
         run: bash scripts/setup.sh
 
       - name: Run validation tests
         run: bash scripts/validate.sh
+
+      - name: Test incremental migration path
+        run: bash scripts/test-migration-path.sh
 
       - name: Verify monolithic bootstrap script
         run: |

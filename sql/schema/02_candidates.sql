@@ -1,5 +1,5 @@
 CREATE TABLE candidates (
-    id                  SERIAL PRIMARY KEY,
+    id                  INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name                VARCHAR(255) NOT NULL,
     headline            VARCHAR(500),
     years_experience    INT NOT NULL DEFAULT 0 CHECK (years_experience >= 0),

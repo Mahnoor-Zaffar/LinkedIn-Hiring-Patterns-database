@@ -1,3 +1,5 @@
+-- Views are created after migrations so they can reference post-migration columns.
+
 CREATE VIEW v_application_pipeline AS
 SELECT
     a.id AS application_id,
@@ -9,7 +11,7 @@ SELECT
     ps.is_terminal,
     a.applied_at,
     a.updated_at,
-    (CURRENT_DATE - a.applied_at::DATE) AS days_in_pipeline
+    a.days_in_pipeline
 FROM applications a
 JOIN candidates c ON c.id = a.candidate_id
 JOIN job_postings jp ON jp.id = a.job_id
@@ -43,22 +45,43 @@ GROUP BY
     jp.is_remote, jp.posted_at;
 
 CREATE VIEW v_company_hiring_metrics AS
+WITH company_application_stats AS (
+    SELECT
+        jp.company_id,
+        COUNT(a.id) AS total_applications,
+        COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+    FROM job_postings jp
+    LEFT JOIN applications a ON a.job_id = jp.id
+    LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
+    GROUP BY jp.company_id
+),
+company_salary_stats AS (
+    SELECT
+        jp.company_id,
+        ROUND(AVG(jp.min_salary), 2) AS avg_min_salary,
+        ROUND(AVG(jp.max_salary), 2) AS avg_max_salary
+    FROM job_postings jp
+    GROUP BY jp.company_id
+)
 SELECT
     co.id AS company_id,
     co.name AS company_name,
     co.industry,
     COUNT(DISTINCT r.id) AS recruiter_count,
     COUNT(DISTINCT jp.id) AS open_roles,
-    COUNT(a.id) AS total_applications,
-    ROUND(AVG(jp.min_salary), 2) AS avg_min_salary,
-    ROUND(AVG(jp.max_salary), 2) AS avg_max_salary,
-    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+    COALESCE(cas.total_applications, 0) AS total_applications,
+    css.avg_min_salary,
+    css.avg_max_salary,
+    COALESCE(cas.offers_extended, 0) AS offers_extended
 FROM companies co
 LEFT JOIN recruiters r ON r.company_id = co.id
 LEFT JOIN job_postings jp ON jp.company_id = co.id
-LEFT JOIN applications a ON a.job_id = jp.id
-LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
-GROUP BY co.id, co.name, co.industry;
+LEFT JOIN company_application_stats cas ON cas.company_id = co.id
+LEFT JOIN company_salary_stats css ON css.company_id = co.id
+GROUP BY
+    co.id, co.name, co.industry,
+    cas.total_applications, cas.offers_extended,
+    css.avg_min_salary, css.avg_max_salary;
 
 COMMENT ON VIEW v_application_pipeline IS 'Denormalized application lifecycle for recruiter dashboards.';
 COMMENT ON VIEW v_job_posting_summary IS 'Per-role funnel metrics and compensation midpoint.';

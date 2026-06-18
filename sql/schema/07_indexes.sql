@@ -3,6 +3,7 @@ CREATE INDEX idx_job_postings_recruiter_id   ON job_postings(recruiter_id);
 CREATE INDEX idx_job_postings_company_id     ON job_postings(company_id);
 CREATE INDEX idx_job_postings_salary_range   ON job_postings(min_salary, max_salary);
 CREATE INDEX idx_job_postings_posted_at      ON job_postings(posted_at DESC);
+CREATE INDEX idx_job_postings_open_roles     ON job_postings(posted_at DESC) WHERE closed_at IS NULL;
 CREATE INDEX idx_applications_job_id         ON applications(job_id);
 CREATE INDEX idx_applications_candidate_id   ON applications(candidate_id);
 CREATE INDEX idx_applications_pipeline_stage ON applications(pipeline_stage);

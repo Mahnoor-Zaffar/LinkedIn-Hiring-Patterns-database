@@ -1,5 +1,5 @@
 CREATE TABLE applications (
-    id              SERIAL PRIMARY KEY,
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id          INT NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
     candidate_id    INT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
     pipeline_stage  SMALLINT NOT NULL DEFAULT 1 REFERENCES pipeline_stages(stage_code),
