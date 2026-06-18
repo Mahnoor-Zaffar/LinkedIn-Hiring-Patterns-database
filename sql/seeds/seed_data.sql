@@ -26,6 +26,7 @@ INSERT INTO recruiters (company_id, name, email, title, hired_at) VALUES
     (4, 'Kevin Zhang',      'kevin.zhang@cloudflare.com',      'Technical Recruiter',          '2021-04-12'),
     (5, 'Anna Kowalski',    'anna.kowalski@figma.com',         'Recruiting Partner',           '2019-08-22');
 
+-- Open roles
 INSERT INTO job_postings (recruiter_id, company_id, title, department, employment_type, min_salary, max_salary, location, is_remote, posted_at) VALUES
     (1, 1, 'Senior Backend Engineer',           'Payments',        'full_time', 180000, 240000, 'San Francisco, CA', FALSE, '2025-11-01 09:00:00+00'),
     (2, 1, 'Staff Infrastructure Engineer',     'Platform',        'full_time', 220000, 300000, 'Remote',            TRUE,  '2025-11-10 14:30:00+00'),
@@ -35,6 +36,11 @@ INSERT INTO job_postings (recruiter_id, company_id, title, department, employmen
     (6, 4, 'Site Reliability Engineer',         'Infrastructure',  'full_time', 170000, 225000, 'Austin, TX',        TRUE,  '2025-11-18 16:00:00+00'),
     (7, 5, 'Frontend Engineer',                 'Product',         'full_time', 140000, 185000, 'San Francisco, CA', FALSE, '2025-11-20 09:30:00+00'),
     (3, 2, 'Analytics Engineer',                'Data Platform',   'full_time', 145000, 190000, 'Remote',            TRUE,  '2025-12-01 12:00:00+00');
+
+-- Closed roles (exercises partial index on open postings)
+INSERT INTO job_postings (recruiter_id, company_id, title, department, employment_type, min_salary, max_salary, location, is_remote, posted_at, closed_at) VALUES
+    (1, 1, 'Payments API Engineer',             'Payments',        'full_time', 160000, 200000, 'San Francisco, CA', FALSE, '2025-09-15 10:00:00+00', '2025-11-15 18:00:00+00'),
+    (5, 3, 'Junior Merchant Developer',         'Merchant Tools',  'full_time',  90000, 120000, 'Toronto, Canada',   FALSE, '2025-08-01 09:00:00+00', '2025-10-01 17:00:00+00');
 
 -- N:M validation:
 --   * Job #1 collects four distinct applicants

@@ -13,6 +13,10 @@ erDiagram
     job_postings ||--o{ applications : receives
     pipeline_stages ||--o{ applications : tracks
 
+    applications ||--o{ application_stage_history : logs
+    pipeline_stages ||--o{ application_stage_history : from_stage
+    pipeline_stages ||--o{ application_stage_history : to_stage
+
     companies {
         serial id PK
         varchar name
@@ -74,6 +78,14 @@ erDiagram
         timestamptz updated_at
         int days_in_pipeline
     }
+
+    application_stage_history {
+        serial id PK
+        int application_id FK
+        smallint from_stage FK
+        smallint to_stage FK
+        timestamptz changed_at
+    }
 ```
 
 ## Cardinality Summary
@@ -85,6 +97,7 @@ erDiagram
 | `recruiters` | `job_postings` | 1:N | One recruiter manages many listings |
 | `candidates` | `applications` | 1:N | One candidate submits many applications |
 | `job_postings` | `applications` | 1:N | One job receives many applications |
+| `applications` | `application_stage_history` | 1:N | Every stage transition is audit-logged |
 | `candidates` ↔ `job_postings` | via `applications` | N:M | Junction resolves many-to-many |
 
 ## Views
@@ -102,3 +115,4 @@ The seed dataset intentionally validates:
 1. **Job 1 → 4 applicants** — one posting, many candidates (1:N from job side)
 2. **Priya → 3 applications** — one candidate, many jobs (1:N from candidate side)
 3. **Elena → 2 Databricks roles** — cross-listing within the same company
+4. **2 closed job postings** — exercises `closed_at` and the open-roles partial index

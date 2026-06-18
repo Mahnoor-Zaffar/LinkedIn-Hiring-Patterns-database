@@ -13,7 +13,7 @@ BEGIN
     SELECT COUNT(*) INTO migration_cnt FROM schema_migrations;
 
     ASSERT pipeline_rows = 20, format('v_application_pipeline expected 20 rows, got %s', pipeline_rows);
-    ASSERT summary_rows = 8,   format('v_job_posting_summary expected 8 rows, got %s', summary_rows);
+    ASSERT summary_rows = 10,  format('v_job_posting_summary expected 10 rows, got %s', summary_rows);
     ASSERT metrics_rows = 5,   format('v_company_hiring_metrics expected 5 rows, got %s', metrics_rows);
     ASSERT migration_cnt >= 2, format('Expected >= 2 migrations, got %s', migration_cnt);
 
@@ -21,4 +21,9 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'applications' AND column_name = 'days_in_pipeline'
     ), 'days_in_pipeline column missing after V002 migration';
+
+    ASSERT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'application_stage_history'
+    ), 'application_stage_history table missing';
 END $$;

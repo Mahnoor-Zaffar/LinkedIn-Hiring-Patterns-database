@@ -51,6 +51,11 @@ for migration_file in sql/migrations/*.sql; do
         run_sql "sql/schema/12_application_triggers.sql"
         run_sql "sql/schema/11_views.sql"
     fi
+
+    if [[ "$version" == "V003" ]]; then
+        run_sql "sql/schema/12_application_triggers.sql"
+        run_sql "sql/schema/11_views.sql"
+    fi
 done
 
 echo "Migration run complete."

@@ -1,6 +1,6 @@
 -- Views are created after migrations so they can reference post-migration columns.
 
-CREATE VIEW v_application_pipeline AS
+CREATE OR REPLACE VIEW v_application_pipeline AS
 SELECT
     a.id AS application_id,
     c.name AS candidate_name,
@@ -18,7 +18,7 @@ JOIN job_postings jp ON jp.id = a.job_id
 JOIN companies co ON co.id = jp.company_id
 JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage;
 
-CREATE VIEW v_job_posting_summary AS
+CREATE OR REPLACE VIEW v_job_posting_summary AS
 SELECT
     jp.id AS job_id,
     jp.title,
@@ -44,7 +44,7 @@ GROUP BY
     jp.department, jp.min_salary, jp.max_salary,
     jp.is_remote, jp.posted_at;
 
-CREATE VIEW v_company_hiring_metrics AS
+CREATE OR REPLACE VIEW v_company_hiring_metrics AS
 WITH company_application_stats AS (
     SELECT
         jp.company_id,
@@ -68,7 +68,7 @@ SELECT
     co.name AS company_name,
     co.industry,
     COUNT(DISTINCT r.id) AS recruiter_count,
-    COUNT(DISTINCT jp.id) AS open_roles,
+    COUNT(DISTINCT jp.id) FILTER (WHERE jp.closed_at IS NULL) AS open_roles,
     COALESCE(cas.total_applications, 0) AS total_applications,
     css.avg_min_salary,
     css.avg_max_salary,

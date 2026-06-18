@@ -9,6 +9,7 @@ DROP VIEW IF EXISTS v_company_hiring_metrics CASCADE;
 DROP VIEW IF EXISTS v_job_posting_summary CASCADE;
 DROP VIEW IF EXISTS v_application_pipeline CASCADE;
 
+DROP TABLE IF EXISTS application_stage_history CASCADE;
 DROP TABLE IF EXISTS applications CASCADE;
 DROP TABLE IF EXISTS job_postings CASCADE;
 DROP TABLE IF EXISTS recruiters CASCADE;
@@ -17,6 +18,7 @@ DROP TABLE IF EXISTS companies CASCADE;
 DROP TABLE IF EXISTS pipeline_stages CASCADE;
 DROP TABLE IF EXISTS schema_migrations CASCADE;
 
+DROP FUNCTION IF EXISTS fn_log_application_stage_change() CASCADE;
 DROP FUNCTION IF EXISTS fn_refresh_days_in_pipeline() CASCADE;
 DROP FUNCTION IF EXISTS fn_validate_job_posting_company() CASCADE;
 DROP FUNCTION IF EXISTS fn_applications_set_timestamps() CASCADE;
@@ -101,6 +103,18 @@ CREATE TABLE applications (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (job_id, candidate_id)
 );
+
+CREATE TABLE application_stage_history (
+    id              INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    application_id  INT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    from_stage      SMALLINT REFERENCES pipeline_stages(stage_code),
+    to_stage        SMALLINT NOT NULL REFERENCES pipeline_stages(stage_code),
+    changed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (from_stage IS DISTINCT FROM to_stage)
+);
+
+CREATE INDEX idx_stage_history_application_id ON application_stage_history(application_id);
+CREATE INDEX idx_stage_history_changed_at     ON application_stage_history(changed_at DESC);
 
 CREATE INDEX idx_recruiters_company_id       ON recruiters(company_id);
 CREATE INDEX idx_job_postings_recruiter_id   ON job_postings(recruiter_id);
@@ -198,6 +212,10 @@ INSERT INTO job_postings (recruiter_id, company_id, title, department, employmen
     (7, 5, 'Frontend Engineer',                 'Product',         'full_time', 140000, 185000, 'San Francisco, CA', FALSE, '2025-11-20 09:30:00+00'),
     (3, 2, 'Analytics Engineer',                'Data Platform',   'full_time', 145000, 190000, 'Remote',            TRUE,  '2025-12-01 12:00:00+00');
 
+INSERT INTO job_postings (recruiter_id, company_id, title, department, employment_type, min_salary, max_salary, location, is_remote, posted_at, closed_at) VALUES
+    (1, 1, 'Payments API Engineer',             'Payments',        'full_time', 160000, 200000, 'San Francisco, CA', FALSE, '2025-09-15 10:00:00+00', '2025-11-15 18:00:00+00'),
+    (5, 3, 'Junior Merchant Developer',         'Merchant Tools',  'full_time',  90000, 120000, 'Toronto, Canada',   FALSE, '2025-08-01 09:00:00+00', '2025-10-01 17:00:00+00');
+
 INSERT INTO applications (job_id, candidate_id, pipeline_stage, applied_at) VALUES
     (1, 1, 5, '2025-11-02 10:15:00+00'),
     (1, 2, 3, '2025-11-03 14:20:00+00'),
@@ -236,6 +254,10 @@ INSERT INTO schema_migrations (version, description) VALUES
     ('V002', 'Add days_in_pipeline tracking metric with non-negative constraint.')
 ON CONFLICT (version) DO NOTHING;
 
+INSERT INTO schema_migrations (version, description) VALUES
+    ('V003', 'Add application_stage_history audit table and stage transition trigger.')
+ON CONFLICT (version) DO NOTHING;
+
 CREATE OR REPLACE FUNCTION fn_applications_set_timestamps()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -245,6 +267,23 @@ BEGIN
 
     IF TG_OP = 'UPDATE' THEN
         NEW.updated_at := NOW();
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION fn_log_application_stage_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO application_stage_history (application_id, from_stage, to_stage, changed_at)
+        VALUES (NEW.id, NULL, NEW.pipeline_stage, NEW.applied_at);
+    ELSIF TG_OP = 'UPDATE' AND OLD.pipeline_stage IS DISTINCT FROM NEW.pipeline_stage THEN
+        INSERT INTO application_stage_history (application_id, from_stage, to_stage, changed_at)
+        VALUES (NEW.id, OLD.pipeline_stage, NEW.pipeline_stage, NOW());
     END IF;
 
     RETURN NEW;
@@ -266,9 +305,21 @@ CREATE TRIGGER trg_applications_set_timestamps
     FOR EACH ROW
     EXECUTE PROCEDURE fn_applications_set_timestamps();
 
+CREATE TRIGGER trg_applications_log_stage_change
+    AFTER INSERT OR UPDATE OF pipeline_stage ON applications
+    FOR EACH ROW
+    EXECUTE PROCEDURE fn_log_application_stage_change();
+
+INSERT INTO application_stage_history (application_id, from_stage, to_stage, changed_at)
+SELECT a.id, NULL, a.pipeline_stage, a.applied_at
+FROM applications a
+WHERE NOT EXISTS (
+    SELECT 1 FROM application_stage_history h WHERE h.application_id = a.id
+);
+
 SELECT fn_refresh_days_in_pipeline();
 
-CREATE VIEW v_application_pipeline AS
+CREATE OR REPLACE VIEW v_application_pipeline AS
 SELECT
     a.id AS application_id,
     c.name AS candidate_name,
@@ -286,7 +337,7 @@ JOIN job_postings jp ON jp.id = a.job_id
 JOIN companies co ON co.id = jp.company_id
 JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage;
 
-CREATE VIEW v_job_posting_summary AS
+CREATE OR REPLACE VIEW v_job_posting_summary AS
 SELECT
     jp.id AS job_id,
     jp.title,
@@ -312,7 +363,7 @@ GROUP BY
     jp.department, jp.min_salary, jp.max_salary,
     jp.is_remote, jp.posted_at;
 
-CREATE VIEW v_company_hiring_metrics AS
+CREATE OR REPLACE VIEW v_company_hiring_metrics AS
 WITH company_application_stats AS (
     SELECT
         jp.company_id,
@@ -336,7 +387,7 @@ SELECT
     co.name AS company_name,
     co.industry,
     COUNT(DISTINCT r.id) AS recruiter_count,
-    COUNT(DISTINCT jp.id) AS open_roles,
+    COUNT(DISTINCT jp.id) FILTER (WHERE jp.closed_at IS NULL) AS open_roles,
     COALESCE(cas.total_applications, 0) AS total_applications,
     css.avg_min_salary,
     css.avg_max_salary,

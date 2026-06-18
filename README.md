@@ -48,6 +48,55 @@ SELECT * FROM v_application_pipeline LIMIT 10;
 SELECT * FROM v_company_hiring_metrics;
 ```
 
+## Sample Output
+
+After `make bootstrap-all`, the seeded database returns analytics-ready results:
+
+**Company hiring metrics** (`v_company_hiring_metrics`):
+
+```
+ company_name | open_roles | total_applications | offers_extended
+--------------+------------+--------------------+-----------------
+ Stripe       |          2 |                  7 |               1
+ Databricks   |          3 |                  7 |               0
+ Shopify      |          1 |                  2 |               0
+ Cloudflare   |          1 |                  2 |               1
+ Figma        |          1 |                  2 |               0
+```
+
+**Hiring funnel** (`sql/analytics/hiring_funnel.sql`):
+
+```
+ stage_name | application_count | pct_of_total
+------------+-------------------+--------------
+ submitted  |                 5 |        25.00
+ phone      |                 5 |        25.00
+ technical  |                 2 |        10.00
+ onsite     |                 3 |        15.00
+ offer      |                 2 |        10.00
+ rejected   |                 2 |        10.00
+ withdrawn  |                 1 |         5.00
+```
+
+**Stage history audit** (`application_stage_history`):
+
+```
+  candidate   |           job           | from_stage | to_stage | changed_at
+--------------+-------------------------+------------+----------+------------
+ Priya Sharma | Senior Backend Engineer |            | onsite   | 2025-11-02
+ Marcus Chen  | Senior Backend Engineer |            | phone    | 2025-11-03
+ James Okafor | Senior Backend Engineer |            | offer    | 2025-11-04
+```
+
+**Closed roles** (partial index `idx_job_postings_open_roles`):
+
+```
+           title           | posted_at  | closed_at
+---------------------------+------------+------------
+ Payments API Engineer     | 2025-09-15 | 2025-11-15
+ Junior Merchant Developer | 2025-08-01 | 2025-10-01
+```
+
 ## Project Structure
 
 ```
@@ -97,6 +146,7 @@ SELECT * FROM v_company_hiring_metrics;
 | `job_postings` | N → 1 `recruiters`, `companies` | Open roles with salary bands |
 | `pipeline_stages` | Reference | Normalized hiring stage codes |
 | `applications` | N:M junction | Candidate ↔ job application events |
+| `application_stage_history` | N → 1 `applications` | Immutable pipeline stage transition audit log |
 
 See [docs/erd.md](docs/erd.md) and [docs/schema-reference.md](docs/schema-reference.md) for full detail.
 

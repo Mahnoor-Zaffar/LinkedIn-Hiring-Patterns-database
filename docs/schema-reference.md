@@ -114,6 +114,24 @@ Junction table for candidate-to-job application events.
 
 ---
 
+### `application_stage_history`
+
+Immutable audit log of pipeline stage transitions.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | `INT GENERATED ALWAYS AS IDENTITY` | PK | Surrogate key |
+| `application_id` | `INT` | NOT NULL, FK → `applications(id)` CASCADE | Parent application |
+| `from_stage` | `SMALLINT` | FK → `pipeline_stages(stage_code)` | Previous stage; NULL = initial submission |
+| `to_stage` | `SMALLINT` | NOT NULL, FK → `pipeline_stages(stage_code)` | New stage |
+| `changed_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT NOW() | Transition timestamp |
+
+**Trigger:** `trg_applications_log_stage_change` — appends row on insert and stage updates
+
+**Indexes:** `idx_stage_history_application_id`, `idx_stage_history_changed_at`
+
+---
+
 ### `schema_migrations`
 
 DDL version audit log.
@@ -130,3 +148,4 @@ DDL version audit log.
 |---------|-------------|
 | V001 | Initial schema with all core tables, views, and triggers |
 | V002 | Add `days_in_pipeline` metric with non-negative CHECK constraint |
+| V003 | Add `application_stage_history` audit table and stage transition trigger |

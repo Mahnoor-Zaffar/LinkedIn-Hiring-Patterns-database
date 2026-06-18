@@ -42,6 +42,7 @@ A relational database tracking recruitment pipelines, talent acquisition activit
 | **candidates** | `id` | None | `name`, `headline`, `years_experience` |
 | **pipeline_stages** | `stage_code` | None | `stage_name`, `is_terminal` |
 | **applications** | `id` | `job_id`, `candidate_id`, `pipeline_stage` | `pipeline_stage`, `applied_at`, `days_in_pipeline` |
+| **application_stage_history** | `id` | `application_id`, `from_stage`, `to_stage` | `changed_at` |
 
 ## 5. Deliverables
 
