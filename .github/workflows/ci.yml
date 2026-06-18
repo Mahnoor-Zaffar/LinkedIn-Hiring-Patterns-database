@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  database-ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: linkedin_hiring
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d linkedin_hiring"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: linkedin_hiring
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Bootstrap database
+        run: bash scripts/setup.sh
+
+      - name: Run validation tests
+        run: bash scripts/validate.sh
+
+      - name: Verify monolithic bootstrap script
+        run: |
+          psql -h localhost -U postgres -d linkedin_hiring -v ON_ERROR_STOP=1 -f linkedin_hiring_schema.sql
+
+      - name: Re-run validation after monolithic script
+        run: bash scripts/validate.sh

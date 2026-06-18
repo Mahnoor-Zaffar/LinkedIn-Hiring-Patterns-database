@@ -1,35 +1,44 @@
 -- =============================================================================
 -- LinkedIn Hiring Patterns Database
--- PostgreSQL Schema, Seed Data, and Evolution Migration
+-- Monolithic bootstrap: DDL, seed data, and schema evolution migration
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
 -- Part 1: DATABASE INITIALIZATION & CLEANUP
 -- -----------------------------------------------------------------------------
 
+DROP VIEW IF EXISTS v_company_hiring_metrics CASCADE;
+DROP VIEW IF EXISTS v_job_posting_summary CASCADE;
+DROP VIEW IF EXISTS v_application_pipeline CASCADE;
+
 DROP TABLE IF EXISTS applications CASCADE;
 DROP TABLE IF EXISTS job_postings CASCADE;
 DROP TABLE IF EXISTS recruiters CASCADE;
 DROP TABLE IF EXISTS candidates CASCADE;
 DROP TABLE IF EXISTS companies CASCADE;
+DROP TABLE IF EXISTS pipeline_stages CASCADE;
+DROP TABLE IF EXISTS schema_migrations CASCADE;
+
+DROP FUNCTION IF EXISTS fn_set_updated_at() CASCADE;
 
 -- -----------------------------------------------------------------------------
 -- Part 2: DDL SCHEMA CREATION
 -- Topological order: root dimensions first, then dependents, then junction.
 -- -----------------------------------------------------------------------------
 
--- Root dimension: corporate hiring accounts
 CREATE TABLE companies (
     id              SERIAL PRIMARY KEY,
     name            VARCHAR(255) NOT NULL,
     industry        VARCHAR(100) NOT NULL,
     employee_count  INT NOT NULL CHECK (employee_count > 0),
     headquarters    VARCHAR(150),
-    founded_year    INT CHECK (founded_year >= 1800 AND founded_year <= EXTRACT(YEAR FROM CURRENT_DATE)),
+    founded_year    INT CHECK (
+        founded_year >= 1800
+        AND founded_year <= EXTRACT(YEAR FROM CURRENT_DATE)
+    ),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Root dimension: platform user profiles
 CREATE TABLE candidates (
     id                  SERIAL PRIMARY KEY,
     name                VARCHAR(255) NOT NULL,
@@ -40,7 +49,6 @@ CREATE TABLE candidates (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Dependent: recruiters belong to a parent company (1:N)
 CREATE TABLE recruiters (
     id              SERIAL PRIMARY KEY,
     company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -51,41 +59,145 @@ CREATE TABLE recruiters (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Dependent: job postings reference recruiter and company (1:N from each)
 CREATE TABLE job_postings (
     id              SERIAL PRIMARY KEY,
     recruiter_id    INT NOT NULL REFERENCES recruiters(id) ON DELETE CASCADE,
     company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     title           VARCHAR(255) NOT NULL,
     department      VARCHAR(100) NOT NULL,
-    employment_type VARCHAR(50) NOT NULL DEFAULT 'full_time',
+    employment_type VARCHAR(50) NOT NULL DEFAULT 'full_time'
+        CHECK (employment_type IN ('full_time', 'part_time', 'contract', 'internship')),
     min_salary      INT NOT NULL CHECK (min_salary >= 0),
     max_salary      INT NOT NULL CHECK (max_salary >= min_salary),
     location        VARCHAR(150),
     is_remote       BOOLEAN NOT NULL DEFAULT FALSE,
     posted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    closed_at       TIMESTAMPTZ
+    closed_at       TIMESTAMPTZ,
+    CHECK (closed_at IS NULL OR closed_at >= posted_at)
 );
 
--- Junction: resolves N:M between candidates and job postings
+CREATE TABLE pipeline_stages (
+    stage_code      SMALLINT PRIMARY KEY,
+    stage_name      VARCHAR(50) NOT NULL UNIQUE,
+    description     TEXT NOT NULL,
+    is_terminal     BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+INSERT INTO pipeline_stages (stage_code, stage_name, description, is_terminal) VALUES
+    (1, 'submitted',  'Application received and awaiting recruiter review.',       FALSE),
+    (2, 'screening',  'Recruiter or ATS initial qualification in progress.',       FALSE),
+    (3, 'phone',      'Phone or video screen scheduled or completed.',             FALSE),
+    (4, 'technical',  'Technical assessment or coding interview stage.',           FALSE),
+    (5, 'onsite',     'Onsite or panel interview loop in progress.',               FALSE),
+    (6, 'offer',      'Offer extended to candidate.',                              TRUE),
+    (7, 'rejected',   'Candidate declined by hiring team.',                        TRUE),
+    (8, 'withdrawn',  'Candidate withdrew from the process.',                      TRUE);
+
 CREATE TABLE applications (
     id              SERIAL PRIMARY KEY,
     job_id          INT NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
     candidate_id    INT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
-    current_status  VARCHAR(100) NOT NULL DEFAULT 'submitted',
+    pipeline_stage  SMALLINT NOT NULL DEFAULT 1 REFERENCES pipeline_stages(stage_code),
     applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (job_id, candidate_id)
 );
 
--- Performance indexes for analytical query patterns
 CREATE INDEX idx_recruiters_company_id       ON recruiters(company_id);
 CREATE INDEX idx_job_postings_recruiter_id   ON job_postings(recruiter_id);
 CREATE INDEX idx_job_postings_company_id     ON job_postings(company_id);
 CREATE INDEX idx_job_postings_salary_range   ON job_postings(min_salary, max_salary);
+CREATE INDEX idx_job_postings_posted_at      ON job_postings(posted_at DESC);
 CREATE INDEX idx_applications_job_id         ON applications(job_id);
 CREATE INDEX idx_applications_candidate_id   ON applications(candidate_id);
-CREATE INDEX idx_applications_applied_at     ON applications(applied_at);
+CREATE INDEX idx_applications_pipeline_stage ON applications(pipeline_stage);
+CREATE INDEX idx_applications_applied_at     ON applications(applied_at DESC);
+
+CREATE OR REPLACE FUNCTION fn_set_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_applications_set_updated_at
+    BEFORE UPDATE ON applications
+    FOR EACH ROW
+    EXECUTE PROCEDURE fn_set_updated_at();
+
+CREATE VIEW v_application_pipeline AS
+SELECT
+    a.id AS application_id,
+    c.name AS candidate_name,
+    c.email AS candidate_email,
+    jp.title AS job_title,
+    co.name AS company_name,
+    ps.stage_name AS pipeline_stage,
+    ps.is_terminal,
+    a.applied_at,
+    a.updated_at,
+    (CURRENT_DATE - a.applied_at::DATE) AS days_in_pipeline
+FROM applications a
+JOIN candidates c ON c.id = a.candidate_id
+JOIN job_postings jp ON jp.id = a.job_id
+JOIN companies co ON co.id = jp.company_id
+JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage;
+
+CREATE VIEW v_job_posting_summary AS
+SELECT
+    jp.id AS job_id,
+    jp.title,
+    co.name AS company_name,
+    co.industry,
+    r.name AS recruiter_name,
+    jp.department,
+    jp.min_salary,
+    jp.max_salary,
+    ROUND((jp.min_salary + jp.max_salary) / 2.0, 2) AS midpoint_salary,
+    jp.is_remote,
+    jp.posted_at,
+    COUNT(a.id) AS total_applications,
+    COUNT(a.id) FILTER (WHERE ps.is_terminal = FALSE) AS active_applications,
+    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+FROM job_postings jp
+JOIN companies co ON co.id = jp.company_id
+JOIN recruiters r ON r.id = jp.recruiter_id
+LEFT JOIN applications a ON a.job_id = jp.id
+LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
+GROUP BY
+    jp.id, jp.title, co.name, co.industry, r.name,
+    jp.department, jp.min_salary, jp.max_salary,
+    jp.is_remote, jp.posted_at;
+
+CREATE VIEW v_company_hiring_metrics AS
+SELECT
+    co.id AS company_id,
+    co.name AS company_name,
+    co.industry,
+    COUNT(DISTINCT r.id) AS recruiter_count,
+    COUNT(DISTINCT jp.id) AS open_roles,
+    COUNT(a.id) AS total_applications,
+    ROUND(AVG(jp.min_salary), 2) AS avg_min_salary,
+    ROUND(AVG(jp.max_salary), 2) AS avg_max_salary,
+    COUNT(a.id) FILTER (WHERE ps.stage_name = 'offer') AS offers_extended
+FROM companies co
+LEFT JOIN recruiters r ON r.company_id = co.id
+LEFT JOIN job_postings jp ON jp.company_id = co.id
+LEFT JOIN applications a ON a.job_id = jp.id
+LEFT JOIN pipeline_stages ps ON ps.stage_code = a.pipeline_stage
+GROUP BY co.id, co.name, co.industry;
+
+CREATE TABLE schema_migrations (
+    version     VARCHAR(100) PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO schema_migrations (version, description) VALUES
+    ('V001', 'Initial schema: companies, candidates, recruiters, job_postings, applications, pipeline_stages.');
 
 -- -----------------------------------------------------------------------------
 -- Part 3: MOCK DATA SEEDING
@@ -101,13 +213,13 @@ INSERT INTO companies (name, industry, employee_count, headquarters, founded_yea
 
 INSERT INTO candidates (name, headline, years_experience, email, location) VALUES
     ('Priya Sharma',      'Senior Backend Engineer | Distributed Systems',       9,  'priya.sharma@email.com',      'Seattle, WA'),
-    ('Marcus Chen',         'Full-Stack Developer | React & Node.js',              5,  'marcus.chen@email.com',       'Austin, TX'),
-    ('Elena Rodriguez',     'Data Engineer | Spark, Airflow, dbt',                 7,  'elena.rodriguez@email.com',   'Denver, CO'),
-    ('James Okafor',        'Staff Software Engineer | Platform Infrastructure',  12,  'james.okafor@email.com',      'New York, NY'),
-    ('Sofia Nakamura',      'ML Engineer | NLP & Recommendation Systems',          4,  'sofia.nakamura@email.com',    'San Jose, CA'),
-    ('David Kim',           'DevOps Engineer | Kubernetes, Terraform, CI/CD',        6,  'david.kim@email.com',         'Portland, OR'),
-    ('Amara Diallo',        'Product Manager | B2B SaaS Growth',                   8,  'amara.diallo@email.com',      'Chicago, IL'),
-    ('Liam O''Brien',       'Frontend Engineer | Design Systems & Accessibility',  3,  'liam.obrien@email.com',       'Boston, MA');
+    ('Marcus Chen',       'Full-Stack Developer | React & Node.js',              5,  'marcus.chen@email.com',       'Austin, TX'),
+    ('Elena Rodriguez',   'Data Engineer | Spark, Airflow, dbt',                 7,  'elena.rodriguez@email.com',   'Denver, CO'),
+    ('James Okafor',      'Staff Software Engineer | Platform Infrastructure',  12,  'james.okafor@email.com',      'New York, NY'),
+    ('Sofia Nakamura',    'ML Engineer | NLP & Recommendation Systems',          4,  'sofia.nakamura@email.com',    'San Jose, CA'),
+    ('David Kim',         'DevOps Engineer | Kubernetes, Terraform, CI/CD',        6,  'david.kim@email.com',         'Portland, OR'),
+    ('Amara Diallo',      'Product Manager | B2B SaaS Growth',                   8,  'amara.diallo@email.com',      'Chicago, IL'),
+    ('Liam O''Brien',     'Frontend Engineer | Design Systems & Accessibility',  3,  'liam.obrien@email.com',       'Boston, MA');
 
 INSERT INTO recruiters (company_id, name, email, title, hired_at) VALUES
     (1, 'Rachel Whitmore',  'rachel.whitmore@stripe.com',      'Senior Technical Recruiter',   '2019-03-15'),
@@ -128,70 +240,42 @@ INSERT INTO job_postings (recruiter_id, company_id, title, department, employmen
     (7, 5, 'Frontend Engineer',                 'Product',         'full_time', 140000, 185000, 'San Francisco, CA', FALSE, '2025-11-20 09:30:00+00'),
     (3, 2, 'Analytics Engineer',                'Data Platform',   'full_time', 145000, 190000, 'Remote',            TRUE,  '2025-12-01 12:00:00+00');
 
--- N:M validation:
---   * Multiple candidates apply to job #1 (Senior Backend Engineer @ Stripe)
---   * Candidate #1 (Priya) submits applications to jobs #1, #2, and #4
---   * Candidate #3 (Elena) applies to both Data Engineer roles at Databricks
-INSERT INTO applications (job_id, candidate_id, current_status, applied_at) VALUES
-    -- Job 1: four distinct applicants (1:N from job perspective)
-    (1, 1, 'onsite_interview',  '2025-11-02 10:15:00+00'),
-    (1, 2, 'phone_screen',      '2025-11-03 14:20:00+00'),
-    (1, 4, 'offer_extended',    '2025-11-04 09:00:00+00'),
-    (1, 6, 'rejected',          '2025-11-05 16:45:00+00'),
-
-    -- Job 2: three applicants
-    (2, 1, 'technical_interview','2025-11-11 11:00:00+00'),
-    (2, 4, 'submitted',         '2025-11-12 08:30:00+00'),
-    (2, 6, 'phone_screen',      '2025-11-13 13:10:00+00'),
-
-    -- Job 3: three applicants
-    (3, 3, 'onsite_interview',  '2025-10-16 10:00:00+00'),
-    (3, 5, 'submitted',         '2025-10-17 15:30:00+00'),
-    (3, 7, 'withdrawn',         '2025-10-18 09:45:00+00'),
-
-    -- Job 4: Priya's third application (1:N from candidate perspective)
-    (4, 1, 'phone_screen',      '2025-10-23 12:00:00+00'),
-    (4, 5, 'technical_interview','2025-10-24 17:00:00+00'),
-
-    -- Job 5: two applicants
-    (5, 2, 'onsite_interview',  '2025-11-06 10:30:00+00'),
-    (5, 8, 'submitted',         '2025-11-07 14:00:00+00'),
-
-    -- Job 6: two applicants
-    (6, 6, 'offer_extended',    '2025-11-19 09:15:00+00'),
-    (6, 4, 'rejected',          '2025-11-20 11:30:00+00'),
-
-    -- Job 7: two applicants
-    (7, 8, 'phone_screen',      '2025-11-21 10:00:00+00'),
-    (7, 2, 'submitted',         '2025-11-22 08:45:00+00'),
-
-    -- Job 8: Elena applies to second Databricks role (candidate multi-application)
-    (8, 3, 'submitted',         '2025-12-02 09:00:00+00'),
-    (8, 5, 'phone_screen',      '2025-12-03 13:20:00+00');
+INSERT INTO applications (job_id, candidate_id, pipeline_stage, applied_at) VALUES
+    (1, 1, 5, '2025-11-02 10:15:00+00'),
+    (1, 2, 3, '2025-11-03 14:20:00+00'),
+    (1, 4, 6, '2025-11-04 09:00:00+00'),
+    (1, 6, 7, '2025-11-05 16:45:00+00'),
+    (2, 1, 4, '2025-11-11 11:00:00+00'),
+    (2, 4, 1, '2025-11-12 08:30:00+00'),
+    (2, 6, 3, '2025-11-13 13:10:00+00'),
+    (3, 3, 5, '2025-10-16 10:00:00+00'),
+    (3, 5, 1, '2025-10-17 15:30:00+00'),
+    (3, 7, 8, '2025-10-18 09:45:00+00'),
+    (4, 1, 3, '2025-10-23 12:00:00+00'),
+    (4, 5, 4, '2025-10-24 17:00:00+00'),
+    (5, 2, 5, '2025-11-06 10:30:00+00'),
+    (5, 8, 1, '2025-11-07 14:00:00+00'),
+    (6, 6, 6, '2025-11-19 09:15:00+00'),
+    (6, 4, 7, '2025-11-20 11:30:00+00'),
+    (7, 8, 3, '2025-11-21 10:00:00+00'),
+    (7, 2, 1, '2025-11-22 08:45:00+00'),
+    (8, 3, 1, '2025-12-02 09:00:00+00'),
+    (8, 5, 3, '2025-12-03 13:20:00+00');
 
 -- -----------------------------------------------------------------------------
 -- Part 4: SCHEMA EVOLUTION MIGRATION
--- Product update: retire singular text status; introduce granular pipeline metric.
+-- Product update: add days_in_pipeline tracking metric with table constraint.
 -- -----------------------------------------------------------------------------
 
--- Remove legacy free-text status descriptor
 ALTER TABLE applications
-    DROP COLUMN current_status;
+    ADD COLUMN days_in_pipeline INT NOT NULL DEFAULT 0;
 
--- Add pipeline depth tracking metric (replaces free-text status granularity)
+UPDATE applications
+SET days_in_pipeline = GREATEST(0, (CURRENT_DATE - applied_at::DATE));
+
 ALTER TABLE applications
-    ADD COLUMN pipeline_stage SMALLINT NOT NULL DEFAULT 1;
+    ADD CONSTRAINT chk_applications_days_in_pipeline
+    CHECK (days_in_pipeline >= 0);
 
--- Backfill stage codes: 1=submitted, 2=screening, 3=phone, 4=technical,
---                       5=onsite, 6=offer, 7=rejected, 8=withdrawn
-UPDATE applications SET pipeline_stage = 5 WHERE id IN (1, 9, 15);
-UPDATE applications SET pipeline_stage = 3 WHERE id IN (2, 7, 12, 18, 20);
-UPDATE applications SET pipeline_stage = 6 WHERE id IN (3, 16);
-UPDATE applications SET pipeline_stage = 7 WHERE id IN (4, 17);
-UPDATE applications SET pipeline_stage = 4 WHERE id IN (5, 13);
-UPDATE applications SET pipeline_stage = 8 WHERE id IN (11);
-
--- Enforce valid pipeline stage range at the table level
-ALTER TABLE applications
-    ADD CONSTRAINT chk_applications_pipeline_stage
-    CHECK (pipeline_stage BETWEEN 1 AND 8);
+INSERT INTO schema_migrations (version, description) VALUES
+    ('V002', 'Add days_in_pipeline tracking metric with non-negative constraint.');
